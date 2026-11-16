@@ -151,10 +151,10 @@ struct MeetingDetailView: View {
                         ProgressView(value: fraction).frame(maxWidth: 260)
                         Text("\(progress.stage) · \(Int(fraction * 100))%")
                     } else {
-                        if governor.pauseReason == nil { ProgressView().controlSize(.small) } else { Image(systemName: "pause.circle") }
+                        if !pipeline.paused.contains(meetingID) { ProgressView().controlSize(.small) } else { Image(systemName: "pause.circle") }
                         Text(progress.stage)
                     }
-                    if governor.pauseReason != nil {
+                    if pipeline.paused.contains(meetingID) {
                         Button("Обработать сейчас") { governor.resumeNow() }
                             .controlSize(.small)
                             .help("Продолжить, не дожидаясь конца звонка. Компьютер может тормозить")
@@ -408,6 +408,10 @@ struct TranscriptTab: View {
             }
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
+                    if meeting.hasAudio {
+                        FullAudioBar(meeting: meeting)
+                        Divider()
+                    }
                     HStack {
                         Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                         TextField("Поиск по транскрипции", text: $filter)
@@ -623,6 +627,58 @@ extension ParticipantsTab {
     }
 }
 
+/// Плеер полной записи встречи: обе дорожки вместе.
+struct FullAudioBar: View {
+    let meeting: Meeting
+    @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var player: SegmentPlayer
+
+    private var key: String { "full-\(meeting.id.uuidString)" }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                player.toggleFull(key: key, urls: state.audioURLs(meeting.id, track: .system) + state.audioURLs(meeting.id, track: .mic))
+            } label: {
+                Image(systemName: player.playingKey == key && !player.paused ? "pause.fill" : "play.fill")
+                    .frame(width: 16)
+            }
+            .help("Прослушать запись целиком")
+            FullAudioSlider(clock: player.clock, total: meeting.duration) { player.seekFull(key: key, to: $0) }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+        .onAppear { if player.playingKey != key { player.resetClock(duration: meeting.duration) } }
+        .onChange(of: meeting.id) { _, _ in player.resetClock(duration: meeting.duration) }
+    }
+}
+
+private struct FullAudioSlider: View {
+    @ObservedObject var clock: PlaybackClock
+    let total: Double
+    let seek: (Double) -> Void
+    @ViewState private var dragged: Double?
+
+    var body: some View {
+        let length = max(1, clock.duration > 0 ? clock.duration : total)
+        HStack(spacing: 10) {
+            Text(Fmt.clock(dragged ?? clock.position))
+                .monospacedDigit()
+            Slider(value: Binding(get: { min(dragged ?? clock.position, length) }, set: { dragged = $0 }), in: 0...length) { editing in
+                if !editing, let target = dragged {
+                    seek(target)
+                    dragged = nil
+                }
+            }
+            .controlSize(.small)
+            Text(Fmt.clock(length))
+                .monospacedDigit()
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+}
+
 struct ParticipantsTab: View {
     let meeting: Meeting
 
@@ -728,6 +784,38 @@ struct SpeakerCard: View {
             .onChange(of: speaker.name) { _, new in if focus != .name { name = new } }
             .onChange(of: speaker.company) { _, new in if focus != .company { company = new } }
 
+            // Человек с таким именем уже есть — предлагаем выбрать его, а не заводить заново.
+            if !speaker.isUser, focus == .name {
+                let found = matches
+                if !found.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(found) { person in
+                            Button {
+                                name = person.name
+                                company = person.company
+                                state.identify(meeting.id, speaker.id, as: person)
+                                focus = nil
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "person.crop.circle")
+                                    Text(person.name)
+                                    if !person.company.isEmpty { Text(person.company).foregroundStyle(.secondary) }
+                                    Spacer()
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.vertical, 3)
+                        }
+                    }
+                    .font(.callout)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.background, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+                }
+            }
+
             // Подсказки из календаря: приглашённые, которым ещё не сопоставлен спикер.
             if !speaker.isUser, speaker.name.isEmpty {
                 let invitees = state.unassignedInvitees(meeting).prefix(6)
@@ -797,6 +885,27 @@ struct SpeakerCard: View {
         .padding(14)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
         .onDisappear { commit() }
+    }
+
+    /// Знакомые люди, подходящие под набираемое имя: каждое набранное слово — начало слова в имени или компании.
+    private var matches: [KnownVoice] {
+        let words = Self.words(name)
+        guard !words.isEmpty else { return [] }
+        let taken = Set(meeting.speakers.filter { $0.id != speaker.id }.compactMap(\.voiceID))
+        return voices.voices.filter { person in
+            guard !taken.contains(person.id), !(speaker.rejectedVoices ?? []).contains(person.id) else { return false }
+            // Этот человек уже выбран и имя набрано полностью — подсказывать нечего.
+            if person.id == speaker.voiceID, person.name.caseInsensitiveCompare(name.trimmingCharacters(in: .whitespaces)) == .orderedSame { return false }
+            let target = Self.words(person.name + " " + person.company)
+            return words.allSatisfy { word in target.contains { $0.hasPrefix(word) } }
+        }
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        .prefix(6).map { $0 }
+    }
+
+    private static func words(_ text: String) -> [String] {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).replacingOccurrences(of: "ё", with: "е")
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
     }
 
     private func badge(_ text: String, _ color: Color) -> some View {

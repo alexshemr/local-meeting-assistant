@@ -34,6 +34,8 @@ final class AppSettings: ObservableObject {
 
     @Published var userName: String { didSet { d.set(userName, forKey: "userName") } }
     @Published var userCompany: String { didSet { d.set(userCompany, forKey: "userCompany") } }
+    /// Собственные адреса пользователя (через запятую): по ним он узнаётся среди приглашённых в календаре.
+    @Published var userEmails: String { didSet { d.set(userEmails, forKey: "userEmails") } }
     @Published var knowledgeBasePath: String { didSet { d.set(knowledgeBasePath, forKey: "knowledgeBasePath") } }
 
     /// Предлагать начать запись, когда другое приложение включает микрофон.
@@ -72,6 +74,7 @@ final class AppSettings: ObservableObject {
     private init() {
         userName = d.string(forKey: "userName") ?? ""
         userCompany = d.string(forKey: "userCompany") ?? ""
+        userEmails = d.string(forKey: "userEmails") ?? ""
         knowledgeBasePath = d.string(forKey: "knowledgeBasePath") ?? AppPaths.defaultKnowledgeBase.path
         suggestStart = d.object(forKey: "suggestStart") as? Bool ?? true
         suggestStop = d.object(forKey: "suggestStop") as? Bool ?? true
@@ -93,6 +96,11 @@ final class AppSettings: ObservableObject {
     }
 
     var knowledgeBaseURL: URL { URL(fileURLWithPath: knowledgeBasePath, isDirectory: true) }
+    /// Адреса пользователя в нижнем регистре.
+    var ownEmails: Set<String> {
+        Set(userEmails.lowercased().split(whereSeparator: { ",; \n".contains($0) }).map(String.init).filter { $0.contains("@") })
+    }
+
     var userDisplayName: String { userName.trimmingCharacters(in: .whitespaces).isEmpty ? "Я" : userName }
 }
 

@@ -56,6 +56,7 @@ final class AppState: ObservableObject {
     let recorder: RecordingController
     let pipeline: ProcessingPipeline
     let governor: LoadGovernor
+    private var ownEmailsReload: Task<Void, Never>?
     let menuBar = MenuBarModel()
     let calendar: CalendarService
     /// Защита от повторного входа: привязка событий сама меняет встречи.
@@ -732,6 +733,15 @@ final class AppState: ObservableObject {
             if !meeting.summary.isEmpty { meeting.summaryStale = true }
         }
         participantsChanged(meetingID)
+    }
+
+    /// В настройках изменился собственный e-mail: перечитываем календарь (не на каждую букву).
+    func ownEmailsChanged() {
+        ownEmailsReload?.cancel()
+        ownEmailsReload = Task {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            if !Task.isCancelled { calendar.reload() }
+        }
     }
 
     // MARK: Follow-up

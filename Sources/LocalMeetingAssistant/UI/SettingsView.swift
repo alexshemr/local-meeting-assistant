@@ -20,7 +20,9 @@ struct SettingsView: View {
             Section("Профиль") {
                 TextField("Ваше имя", text: $settings.userName, prompt: Text("Например, Алексей Иванов"))
                 TextField("Ваша компания", text: $settings.userCompany)
-                Text("Используется, чтобы подписать ваши реплики и составлять follow-up от вашего лица.")
+                TextField("Ваш e-mail", text: $settings.userEmails, prompt: Text("Несколько адресов — через запятую"))
+                    .onChange(of: settings.userEmails) { _, _ in state.ownEmailsChanged() }
+                Text("Имя и компания подписывают ваши реплики и follow-up. По e-mail приложение узнаёт вас среди приглашённых в календаре.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

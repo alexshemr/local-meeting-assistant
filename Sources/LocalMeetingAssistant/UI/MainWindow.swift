@@ -51,12 +51,7 @@ struct MainWindow: View {
                     // Без запроса — навигация по сетке; при поиске — список найденных событий и записей.
                     if query.trimmingCharacters(in: .whitespaces).isEmpty { CalendarSidebar() } else { CalendarList(query: query) }
                 case .settings:
-                    Text("Настройки открыты справа.\nСписок встреч — второй значок внизу.")
-                        .font(.callout)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding()
+                    Color.clear
                 }
             }
             .alert("Не удалось импортировать файл", isPresented: Binding(

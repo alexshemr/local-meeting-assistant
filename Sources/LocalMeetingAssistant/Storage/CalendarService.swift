@@ -105,13 +105,14 @@ final class CalendarService: ObservableObject {
             return
         }
         let now = Date()
+        let own = settings.ownEmails
         let predicate = store.predicateForEvents(withStart: now.addingTimeInterval(-180 * 86_400),
                                                  end: now.addingTimeInterval(60 * 86_400), calendars: used)
-        events = store.events(matching: predicate).filter { !$0.isAllDay }.map(Self.convert).sorted { $0.start > $1.start }
+        events = store.events(matching: predicate).filter { !$0.isAllDay }.map { Self.convert($0, own: own) }.sorted { $0.start > $1.start }
         onChange?()
     }
 
-    private static func convert(_ event: EKEvent) -> CalendarEvent {
+    private static func convert(_ event: EKEvent, own: Set<String>) -> CalendarEvent {
         let organizer = event.organizer?.url
         var attendees: [CalendarAttendee] = (event.attendees ?? []).filter { $0.participantType != .room && $0.participantType != .resource }.map { person in
             let email = person.url.absoluteString.replacingOccurrences(of: "mailto:", with: "", options: .caseInsensitive)
@@ -125,7 +126,7 @@ final class CalendarService: ObservableObject {
             var name = person.name ?? ""
             if name.isEmpty || name.contains("@") { name = email.split(separator: "@").first.map(String.init) ?? email }
             return CalendarAttendee(name: name, email: email.contains("@") ? email : "", status: status,
-                                    isSelf: person.isCurrentUser, isOrganizer: person.url == organizer)
+                                    isSelf: person.isCurrentUser || own.contains(email.lowercased()), isOrganizer: person.url == organizer)
         }
         // Один и тот же человек иногда приходит дважды (как организатор и как участник).
         var seen = Set<String>()

@@ -26,7 +26,15 @@ final class ProcessingPipeline: ObservableObject {
     private let governor: LoadGovernor
     private var modes: [UUID: Mode] = [:]
     private var worker: Task<Void, Never>?
-    private var summaryTask: (id: UUID, task: Task<MeetingAI.SummaryResult, Error>)?
+    private var summaryTasks: [UUID: Task<MeetingAI.SummaryResult, Error>] = [:]
+    /// Встречи, которые сейчас ждут, пока компьютер освободится.
+    @Published private(set) var paused: Set<UUID> = []
+    /// Саммари облачной моделью этот Mac не нагружает, поэтому готовится отдельно от основной очереди:
+    /// его не задерживают ни звонок, ни распознавание другой встречи, вставшее на паузу.
+    private var cloudLane: Set<UUID> = []
+    private var cloudWorker: Task<Void, Never>?
+    /// Встречи, которые обрабатываются прямо сейчас (а не ждут очереди).
+    private var running: Set<UUID> = []
 
     private var rerun: Set<UUID> = []
 
@@ -58,28 +66,31 @@ final class ProcessingPipeline: ObservableObject {
         guard let reason = governor.pauseReason else { return }
         let saved = progress[id]
         setProgress(id, "Пауза: \(reason). Обработка продолжится сама", nil)
+        paused.insert(id)
         await governor.waitUntilClear()
+        paused.remove(id)
         if queue.contains(id) { progress[id] = saved ?? Progress(stage: "Обработка", fraction: nil) }
     }
 
     /// Компьютер понадобился пользователю: прерываем генерацию саммари, чтобы освободить память и видеоускоритель.
     /// Саммари будет сформировано заново, когда пауза закончится.
     func suspendForPause() {
-        guard let current = summaryTask else { return }
-        rerun.insert(current.id)
-        current.task.cancel()
+        for (id, task) in summaryTasks {
+            rerun.insert(id)
+            task.cancel()
+        }
     }
 
     /// Саммари этой встречи сейчас генерируется или ждёт очереди (распознавание сюда не относится).
     func isSummaryPending(_ id: UUID) -> Bool {
-        summaryTask?.id == id || (queue.contains(id) && modes[id] == .summaryOnly)
+        summaryTasks[id] != nil || (queue.contains(id) && modes[id] == .summaryOnly)
     }
 
     /// Формирует саммари по текущему состоянию встречи; если оно как раз генерируется — начинает заново.
     func requestSummary(_ id: UUID) {
-        if let current = summaryTask, current.id == id {
+        if let current = summaryTasks[id] {
             rerun.insert(id)
-            current.task.cancel()
+            current.cancel()
         } else if !queue.contains(id) {
             enqueue(id, mode: .summaryOnly)
         }
@@ -89,9 +100,10 @@ final class ProcessingPipeline: ObservableObject {
     /// Прерывает генерацию саммари (или снимает её с очереди). Прежний текст саммари остаётся.
     func cancelSummary(_ id: UUID) {
         rerun.remove(id)
-        if let current = summaryTask, current.id == id {
-            current.task.cancel()
-        } else if modes[id] == .summaryOnly, let index = queue.firstIndex(of: id), index > 0 || worker == nil {
+        if let current = summaryTasks[id] {
+            current.cancel()
+        } else if modes[id] == .summaryOnly, let index = queue.firstIndex(of: id), !running.contains(id) {
+            cloudLane.remove(id)
             queue.remove(at: index)
             modes[id] = nil
             progress[id] = nil
@@ -104,27 +116,50 @@ final class ProcessingPipeline: ObservableObject {
         modes[id] = mode
         if mode != .summaryOnly { store.update(id) { $0.status = .queued; $0.errorMessage = nil } }
         progress[id] = Progress(stage: "В очереди", fraction: nil)
-        startWorkerIfNeeded()
+        if mode == .summaryOnly, !settings.llmEngine.loadsThisMac {
+            cloudLane.insert(id)
+            startCloudWorkerIfNeeded()
+        } else {
+            startWorkerIfNeeded()
+        }
     }
 
     private func startWorkerIfNeeded() {
         guard worker == nil else { return }
         worker = Task {
-            while let id = queue.first {
-                await run(id, mode: modes[id] ?? .resume)
-                if rerun.remove(id) != nil {
-                    // Саммари прервали, чтобы сразу сформировать заново (новые замечания или участники).
-                    modes[id] = .summaryOnly
-                    liveSummary[id] = nil
-                    continue
-                }
-                if queue.first == id { queue.removeFirst() }
-                modes[id] = nil
-                progress[id] = nil
-                liveSummary[id] = nil
+            while let id = queue.first(where: { !cloudLane.contains($0) }) {
+                await runToEnd(id)
             }
             worker = nil
         }
+    }
+
+    private func startCloudWorkerIfNeeded() {
+        guard cloudWorker == nil else { return }
+        cloudWorker = Task {
+            while let id = queue.first(where: { cloudLane.contains($0) }) {
+                await runToEnd(id)
+                cloudLane.remove(id)
+            }
+            cloudWorker = nil
+        }
+    }
+
+    private func runToEnd(_ id: UUID) async {
+        running.insert(id)
+        while true {
+            await run(id, mode: modes[id] ?? .resume)
+            // Саммари прервали, чтобы сразу сформировать заново (новые замечания или участники).
+            guard rerun.remove(id) != nil else { break }
+            modes[id] = .summaryOnly
+            liveSummary[id] = nil
+        }
+        running.remove(id)
+        queue.removeAll { $0 == id }
+        modes[id] = nil
+        progress[id] = nil
+        liveSummary[id] = nil
+        paused.remove(id)
     }
 
     private func run(_ id: UUID, mode: Mode) async {
@@ -328,11 +363,11 @@ final class ProcessingPipeline: ObservableObject {
             try await ai.summarize(meeting, style: style, onStage: { stage, fraction in
                 Task { @MainActor in self.setProgress(id, stage, fraction) }
             }, onText: { text in
-                Task { @MainActor in if self.summaryTask?.id == id { self.liveSummary[id] = text } }
+                Task { @MainActor in if self.summaryTasks[id] != nil { self.liveSummary[id] = text } }
             })
         }
-        summaryTask = (id, task)
-        defer { summaryTask = nil }
+        summaryTasks[id] = task
+        defer { summaryTasks[id] = nil }
         do {
             let result = try await task.value
             store.update(id) {
