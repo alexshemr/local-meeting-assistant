@@ -67,6 +67,57 @@ struct Speaker: Codable, Identifiable, Hashable {
     }
 }
 
+/// Сопоставление имён: в календаре человек часто записан латиницей или адресом почты
+/// («mikhail.milovanov», «Grigor Cymbal»), а в приложении — по-русски («Михаил Милованов»).
+enum NameMatch {
+    private static let map: [Character: String] = [
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e", "ж": "zh", "з": "z", "и": "i", "й": "i",
+        "к": "k", "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f",
+        "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch", "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "iu", "я": "ia",
+    ]
+
+    /// Слова имени латиницей в нижнем регистре; короткие обрывки («se», «a») отбрасываются.
+    static func tokens(_ name: String) -> [String] {
+        var latin = ""
+        for character in name.lowercased() { latin += map[character] ?? String(character) }
+        let folded = latin.folding(options: .diacriticInsensitive, locale: nil)
+        return folded.components(separatedBy: CharacterSet.letters.inverted).filter { $0.count >= 4 }
+    }
+
+    /// Два слова — одно и то же имя с поправкой на разные способы транслитерации (Цымбал — Cymbal, Tsymbal).
+    static func similar(_ a: String, _ b: String) -> Bool {
+        if a == b { return true }
+        let x = Array(a), y = Array(b)
+        guard abs(x.count - y.count) <= 2 else { return false }
+        var previous = Array(0...y.count)
+        for i in 1...x.count {
+            var current = [i] + [Int](repeating: 0, count: y.count)
+            for j in 1...y.count {
+                current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (x[i - 1] == y[j - 1] ? 0 : 1))
+            }
+            previous = current
+        }
+        return previous[y.count] <= (min(x.count, y.count) >= 6 ? 2 : 1)
+    }
+
+    static func same(_ first: String, _ second: String) -> Bool {
+        let a = tokens(first), b = tokens(second)
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        let matched = a.filter { x in b.contains { similar(x, $0) } }.count
+        // Имя и фамилия должны совпасть оба, если они есть с обеих сторон: одного «Михаила» мало.
+        return matched >= min(2, min(a.count, b.count))
+    }
+
+    static func same(speakerName: String, speakerEmail: String?, attendee: CalendarAttendee) -> Bool {
+        if let email = speakerEmail, !email.isEmpty, !attendee.email.isEmpty,
+           email.caseInsensitiveCompare(attendee.email) == .orderedSame { return true }
+        if same(speakerName, attendee.name) { return true }
+        // Имя в календаре бывает пустым или неинформативным — тогда сравниваем с адресом почты.
+        let local = attendee.email.split(separator: "@").first.map(String.init) ?? ""
+        return !local.isEmpty && same(speakerName, local)
+    }
+}
+
 /// Момент записи, где, похоже, один звонок сменился другим.
 struct SplitMark: Codable, Hashable {
     /// Секунды от начала записи.
@@ -159,6 +210,10 @@ struct Meeting: Codable, Identifiable {
     var calendar: CalendarEvent?
     /// Пользователь отвязал событие календаря — автоматически заново не привязываем.
     var calendarDetached = false
+    /// Событие привязано вручную — автоматическая проверка его не снимает.
+    var calendarManual = false
+    /// Название встречи до того, как его заменила тема из календаря (чтобы вернуть при отвязке).
+    var titleBeforeCalendar: String?
 
     init(title: String, startedAt: Date) {
         self.title = title
@@ -194,6 +249,8 @@ struct Meeting: Codable, Identifiable {
         splitMarks = try c.decodeIfPresent([SplitMark].self, forKey: .splitMarks) ?? []
         calendar = try c.decodeIfPresent(CalendarEvent.self, forKey: .calendar)
         calendarDetached = try c.decodeIfPresent(Bool.self, forKey: .calendarDetached) ?? false
+        calendarManual = try c.decodeIfPresent(Bool.self, forKey: .calendarManual) ?? false
+        titleBeforeCalendar = try c.decodeIfPresent(String.self, forKey: .titleBeforeCalendar)
     }
 
     var endedAt: Date { startedAt.addingTimeInterval(duration) }
@@ -214,9 +271,13 @@ struct Meeting: Codable, Identifiable {
     func speaker(for attendee: CalendarAttendee) -> Speaker? {
         if attendee.isSelf { return activeSpeakers.first(where: \.isUser) }
         return activeSpeakers.first { speaker in
-            !speaker.isUser && (speaker.name.caseInsensitiveCompare(attendee.name) == .orderedSame
-                || (!attendee.email.isEmpty && speaker.email?.caseInsensitiveCompare(attendee.email) == .orderedSame))
+            !speaker.isUser && NameMatch.same(speakerName: speaker.name, speakerEmail: speaker.email, attendee: attendee)
         }
+    }
+
+    /// Названные собеседники (без владельца записи).
+    var namedSpeakers: [Speaker] {
+        activeSpeakers.filter { !$0.isUser && !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }
     }
 
     /// Приглашённые по календарю, которых не слышно в записи: не пришли или молчали.

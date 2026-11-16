@@ -2,37 +2,109 @@ import Foundation
 
 /// Связь встреч с событиями календаря и людьми.
 extension AppState {
-    /// Привязывает к встречам события календаря, во время которых они шли.
-    /// Вызывается при запуске, при изменении календаря и после каждой записи.
+    /// Решает для каждой встречи, записана ли она во время события календаря.
+    ///
+    /// Одного совпадения по времени мало: в календаре стоят и обеды, и напоминания, а созвониться можно
+    /// с кем угодно. Событие привязывается, только если в нём есть приглашённые и хотя бы один названный
+    /// собеседник — среди них. Пока собеседники не названы, событие привязывается предварительно
+    /// (чтобы подсказать имена) и снимается, если после называния никто не совпал.
+    /// Вызывается при запуске, при изменении календаря и при любой правке встреч.
     func linkCalendarEvents() {
-        guard calendar.authorized, settings.calendarEnabled else { return }
-        for meeting in store.meetings where meeting.calendar == nil && !meeting.calendarDetached && meeting.status != .recording {
-            guard let event = calendar.bestEvent(start: meeting.startedAt, duration: meeting.duration) else { continue }
-            attach(event, to: meeting.id)
-        }
-        // Состав приглашённых и тема могли измениться в календаре.
-        for meeting in store.meetings {
-            guard let linked = meeting.calendar, let fresh = calendar.event(linked.id), fresh != linked else { continue }
-            store.update(meeting.id) {
-                $0.calendar = fresh
-                if !$0.titleIsCustom, $0.title == linked.title { $0.title = fresh.title }
+        // В режиме просмотра вёрстки (`--snapshot`) данные не меняем.
+        guard calendar.authorized, settings.calendarEnabled, !linking,
+              !CommandLine.arguments.contains("--snapshot") else { return }
+        linking = true
+        defer { linking = false }
+        for meeting in store.meetings where meeting.status != .recording {
+            if meeting.calendarManual {
+                // Привязано вручную: только подтягиваем изменения события из календаря.
+                if let linked = meeting.calendar, let fresh = calendar.event(linked.id), fresh != linked {
+                    store.update(meeting.id) { $0.calendar = fresh }
+                }
+                continue
+            }
+            if meeting.calendarDetached { continue }
+            let options = calendar.candidates(start: meeting.startedAt, duration: meeting.duration)
+            let named = meeting.namedSpeakers
+            let chosen: CalendarEvent?
+            if named.isEmpty {
+                // Ещё не обработана или собеседники не названы — берём событие по времени, предварительно.
+                chosen = meeting.utterances.isEmpty || !meeting.unnamedSpeakers.isEmpty ? options.first : nil
+            } else {
+                chosen = options.first { event in
+                    named.contains { speaker in
+                        event.attendees.contains {
+                            !$0.isSelf && NameMatch.same(speakerName: speaker.name, speakerEmail: speaker.email, attendee: $0)
+                        }
+                    }
+                }
+            }
+            if let chosen {
+                if meeting.calendar != chosen { attach(chosen, to: meeting.id, manual: false) }
+            } else if meeting.calendar != nil {
+                removeCalendar(meeting.id, byUser: false)
             }
         }
     }
 
-    func attach(_ event: CalendarEvent, to meetingID: UUID) {
+    func attach(_ event: CalendarEvent, to meetingID: UUID, manual: Bool = true) {
         store.update(meetingID) {
+            if $0.calendar == nil, !$0.titleIsCustom { $0.titleBeforeCalendar = $0.title }
             $0.calendar = event
             $0.calendarDetached = false
+            $0.calendarManual = manual
             if !$0.titleIsCustom { $0.title = event.title }
         }
         syncEmails(meetingID)
     }
 
     func detachCalendar(_ meetingID: UUID) {
+        removeCalendar(meetingID, byUser: true)
+    }
+
+    private func removeCalendar(_ meetingID: UUID, byUser: Bool) {
+        guard let meeting = store.meeting(meetingID), let event = meeting.calendar else { return }
+        var needsTitle = false
         store.update(meetingID) {
             $0.calendar = nil
-            $0.calendarDetached = true
+            $0.calendarManual = false
+            if byUser { $0.calendarDetached = true }
+            // Название было темой события — возвращаем прежнее.
+            if !$0.titleIsCustom, $0.title == event.title {
+                if let previous = $0.titleBeforeCalendar, !previous.isEmpty {
+                    $0.title = previous
+                } else {
+                    $0.title = Meeting.defaultTitle(for: $0.startedAt)
+                    needsTitle = true
+                }
+            }
+            $0.titleBeforeCalendar = nil
+        }
+        // Прежнее название не сохранилось (встреча привязана старой версией) — придумываем по саммари.
+        if needsTitle { retitle(meetingID) }
+    }
+
+    /// Придумывает название встречи по её саммари — когда прежнее название утрачено.
+    private func retitle(_ meetingID: UUID) {
+        guard let meeting = store.meeting(meetingID), !meeting.summary.isEmpty,
+              governor.pauseReason == nil || !settings.llmEngine.loadsThisMac,
+              let client = models.llmClient(gpu: settings.performanceMode.usesGPU) else { return }
+        let fallback = meeting.title
+        let prompt = """
+        Ниже — саммари рабочей встречи. Придумай короткое название встречи по её основной теме: 3–8 слов, \
+        без кавычек и точки в конце. В ответе дай только название.
+
+        \(meeting.summary.prefix(4000))
+        """
+        retitleQueue = Task { [previous = retitleQueue] in
+            await previous?.value
+            guard let raw = try? await client.generate(prompt: prompt, maxTokens: 40, onText: { _ in }) else { return }
+            let title = raw.split(separator: "\n").first.map(String.init)?
+                .trimmingCharacters(in: CharacterSet(charactersIn: " *«»\"#.")) ?? ""
+            guard !title.isEmpty, title.count <= 90 else { return }
+            store.update(meetingID) {
+                if !$0.titleIsCustom, $0.calendar == nil, $0.title == fallback { $0.title = title }
+            }
         }
     }
 
@@ -118,9 +190,7 @@ extension AppState {
             if case .meeting = selection { return }
             selection = store.meetings.first.map { .meeting($0.id) }
         case .calendar:
-            if case .event = selection { return }
-            if case .meeting = selection { return }
-            selection = nil
+            selection = .calendarGrid
         }
     }
 }

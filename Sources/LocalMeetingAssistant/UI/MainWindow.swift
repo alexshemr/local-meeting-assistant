@@ -47,7 +47,9 @@ struct MainWindow: View {
                 switch state.tab {
                 case .meetings: meetingsList
                 case .people: PeopleList(query: query)
-                case .calendar: CalendarList(query: query)
+                case .calendar:
+                    // Без запроса — навигация по сетке; при поиске — список найденных событий и записей.
+                    if query.trimmingCharacters(in: .whitespaces).isEmpty { CalendarSidebar() } else { CalendarList(query: query) }
                 case .settings:
                     Text("Настройки открыты справа.\nСписок встреч — второй значок внизу.")
                         .font(.callout)
@@ -98,6 +100,8 @@ struct MainWindow: View {
                 case .event(let id):
                     EventDetailView(eventID: id)
                         .id(id)
+                case .calendarGrid:
+                    CalendarGridView()
                 case .settings:
                     SettingsView()
                 default:

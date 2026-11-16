@@ -8,7 +8,15 @@ enum SidebarSelection: Hashable {
     case person(UUID)
     /// Событие календаря.
     case event(String)
+    /// Сетка календаря (неделя или месяц).
+    case calendarGrid
     case settings
+}
+
+enum CalendarMode: String, CaseIterable, Identifiable {
+    case week, month
+    var id: String { rawValue }
+    var title: String { self == .week ? "Неделя" : "Месяц" }
 }
 
 /// Разделы нижнего меню.
@@ -50,6 +58,12 @@ final class AppState: ObservableObject {
     let governor: LoadGovernor
     let menuBar = MenuBarModel()
     let calendar: CalendarService
+    /// Защита от повторного входа: привязка событий сама меняет встречи.
+    var linking = false
+    var retitleQueue: Task<Void, Never>?
+    /// Вид сетки календаря и дата, вокруг которой она построена.
+    @Published var calendarMode: CalendarMode = .week
+    @Published var calendarAnchor = Date()
     private var menuBarObserver: AnyCancellable?
 
     private let monitor = MicActivityMonitor()
@@ -62,8 +76,10 @@ final class AppState: ObservableObject {
             switch selection {
             case .settings: if tab != .settings { tab = .settings }
             case .person: if tab != .people { tab = .people }
-            case .event: if tab != .calendar { tab = .calendar }
-            case .meeting: if tab == .settings || tab == .people { tab = .meetings }
+            case .event, .calendarGrid: if tab != .calendar { tab = .calendar }
+            case .meeting:
+                if tab == .settings || tab == .people { tab = .meetings }
+                // Встреча, открытая из календаря, остаётся в разделе календаря.
             case nil: break
             }
         }
@@ -131,7 +147,11 @@ final class AppState: ObservableObject {
 
         store.load()
         voices.load()
-        store.onChange = { [weak self] meeting in self?.scheduleExport(meeting.id) }
+        store.onChange = { [weak self] meeting in
+            self?.scheduleExport(meeting.id)
+            // Названы участники, закончилась обработка — перепроверяем, к какому событию относится встреча.
+            self?.linkCalendarEvents()
+        }
         store.onDelete = { [weak self] meeting in self?.removeFromKnowledgeBase(meeting) }
 
         recorder.onFinished = { [weak self] id in
@@ -255,6 +275,11 @@ final class AppState: ObservableObject {
         }
         // Отладка вёрстки: `--snapshot <файл.png>` сохраняет изображение главного окна.
         if arguments.contains("--show-settings") { selection = .settings }
+        if arguments.contains("--demo-calendar"), inspectOnly { calendar.loadDemo() }
+        if arguments.contains("--show-calendar") {
+            if arguments.contains("--month") { calendarMode = .month }
+            selection = .calendarGrid
+        }
         if arguments.contains("--show-person"), let voice = voices.voices.first { selection = .person(voice.id) }
         if arguments.contains("--demo-recording") {
             recorder.showDemoRecording()

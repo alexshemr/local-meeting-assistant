@@ -252,6 +252,12 @@ struct EventDetailView: View {
             let recorded = state.meetings(for: event)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    Button {
+                        state.calendarAnchor = event.start
+                        state.selection = .calendarGrid
+                    } label: { Label("Календарь", systemImage: "chevron.left") }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 6) {
                         Text(event.title).font(.title2.weight(.semibold))
                         Text("\(Fmt.dayLong.string(from: event.start)) · \(Fmt.hm.string(from: event.start))–\(Fmt.hm.string(from: event.end)) · календарь «\(event.calendar)»")

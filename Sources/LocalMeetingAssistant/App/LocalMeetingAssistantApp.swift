@@ -252,6 +252,18 @@ enum SelfCheck {
             done.wait()
             return true
         }
+        // --check-names: сопоставление имён из календаря (латиница, почта) с именами спикеров.
+        if args.contains("--check-names") {
+            let pairs = [("Михаил Милованов", "mikhail.milovanov"), ("Григор Цымбал", "Grigor Cymbal"),
+                         ("Илья Шумий", "ilia.shumii"), ("Анастасия Лукьянова", "lukianova.a"), ("Сергей Смирнов", "smirnov.se"),
+                         ("Марина Исубилова", "Marina Isubilova"), ("Денис Ларин", "denis.larin"), ("Мансур Таибов", "Mansur Taibov"),
+                         ("Михаил Милованов", "mikhail.ivanov"), ("Денис Ларин", "Denis Laptev"), ("Антон Каретников", "kudasov.e"),
+                         ("Елена Баянова", "lukianova.a"), ("Марина", "Marina Isubilova"), ("Алексей Шемякин", "aleksei.shemiakin")]
+            for (speaker, attendee) in pairs {
+                print("\(NameMatch.same(speaker, attendee) ? "MATCH " : "  no  ") \(speaker) ~ \(attendee)  \(NameMatch.tokens(speaker)) \(NameMatch.tokens(attendee))")
+            }
+            return true
+        }
         // --check-llm: какие движки найдены и отвечают ли они на короткий тестовый вопрос.
         if args.contains("--check-llm") {
             let done = DispatchSemaphore(value: 0)

@@ -105,8 +105,8 @@ final class CalendarService: ObservableObject {
             return
         }
         let now = Date()
-        let predicate = store.predicateForEvents(withStart: now.addingTimeInterval(-60 * 86_400),
-                                                 end: now.addingTimeInterval(21 * 86_400), calendars: used)
+        let predicate = store.predicateForEvents(withStart: now.addingTimeInterval(-180 * 86_400),
+                                                 end: now.addingTimeInterval(60 * 86_400), calendars: used)
         events = store.events(matching: predicate).filter { !$0.isAllDay }.map(Self.convert).sorted { $0.start > $1.start }
         onChange?()
     }
@@ -137,19 +137,41 @@ final class CalendarService: ObservableObject {
                              attendees: attendees)
     }
 
+    /// Отладка вёрстки (`--demo-calendar`): вымышленные события на текущую неделю, без доступа к календарю.
+    func loadDemo() {
+        authorized = true
+        let monday = Cal.startOfWeek(Date())
+        func at(_ day: Int, _ hour: Double, _ minutes: Double, _ title: String, _ people: [String]) -> CalendarEvent {
+            let start = monday.addingTimeInterval(Double(day) * 86_400 + hour * 3600)
+            let attendees = people.map { CalendarAttendee(name: $0, email: "", status: "accepted") }
+            return CalendarEvent(id: "demo-\(day)-\(hour)-\(title)", title: title, start: start, end: start.addingTimeInterval(minutes * 60),
+                                 calendar: "Работа", attendees: attendees)
+        }
+        events = [
+            at(0, 10, 30, "Планёрка команды", ["Анна", "Борис"]), at(0, 11, 60, "Интеграция с партнёром", ["Вера"]),
+            at(0, 11.5, 45, "Созвон с подрядчиком", ["Глеб"]), at(1, 9.5, 30, "Стендап", ["Анна"]),
+            at(1, 13, 60, "Обед", []), at(1, 15, 90, "Демо продукта", ["Вера", "Глеб", "Дарья"]),
+            at(2, 10, 30, "Планёрка команды", ["Анна", "Борис"]), at(2, 16, 45, "Один на один", ["Борис"]),
+            at(3, 12, 60, "Сверка статусов", ["Дарья"]), at(3, 12, 30, "Короткий звонок", ["Глеб"]),
+            at(3, 12.5, 60, "Обсуждение договора", ["Вера"]), at(4, 11, 120, "Квартальное планирование", ["Анна", "Борис", "Вера"]),
+            at(4, 17, 30, "Итоги недели", ["Анна"]),
+        ].sorted { $0.start > $1.start }
+    }
+
     func event(_ id: String) -> CalendarEvent? { events.first { $0.id == id } }
 
-    /// Событие, во время которого шла встреча: с наибольшим пересечением по времени.
-    func bestEvent(start: Date, duration: Double) -> CalendarEvent? {
+    /// События, во время которых шла запись, — от большего пересечения по времени к меньшему.
+    /// Учитываются только события с приглашёнными: напоминания и личные блоки («Обед») встречами не считаются.
+    func candidates(start: Date, duration: Double) -> [CalendarEvent] {
         let end = start.addingTimeInterval(duration)
-        var best: (event: CalendarEvent, overlap: Double)?
-        for event in events {
+        var found: [(event: CalendarEvent, overlap: Double)] = []
+        for event in events where event.attendees.contains(where: { !$0.isSelf }) {
             let overlap = min(end, event.end).timeIntervalSince(max(start, event.start))
             let shorter = min(duration, event.end.timeIntervalSince(event.start))
             // Пересечение должно быть существенным: хотя бы 40% более короткого из двух отрезков и не меньше двух минут.
             guard overlap >= max(120, shorter * 0.4) || (shorter < 300 && overlap >= shorter * 0.6) else { continue }
-            if overlap > (best?.overlap ?? 0) { best = (event, overlap) }
+            found.append((event, overlap))
         }
-        return best?.event
+        return found.sorted { $0.overlap > $1.overlap }.map(\.event)
     }
 }
