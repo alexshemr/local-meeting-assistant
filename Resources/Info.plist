@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Local Meeting Assistant</string>
+    <key>CFBundleDisplayName</key>
+    <string>Local Meeting Assistant</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.local-meeting-assistant</string>
+    <key>CFBundleExecutable</key>
+    <string>LocalMeetingAssistant</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__BUILD__</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>ru</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>15.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Микрофон нужен, чтобы записывать вашу речь на встречах. Запись остаётся на этом компьютере.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Календарь нужен, чтобы подставлять тему встречи и список приглашённых. События читаются на этом компьютере и никуда не передаются.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Календарь нужен, чтобы подставлять тему встречи и список приглашённых. События читаются на этом компьютере и никуда не передаются.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Доступ к системному звуку нужен, чтобы записывать голоса собеседников. Запись остаётся на этом компьютере.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Работает полностью локально. Данные не покидают компьютер.</string>
+</dict>
+</plist>
