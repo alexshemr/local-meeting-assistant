@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-export VERSION="${VERSION:-0.1.0}"
+export VERSION="${VERSION:-0.1.1}"
 "$ROOT/scripts/build-app.sh"
 
 APP="$ROOT/dist/Local Meeting Assistant.app"
